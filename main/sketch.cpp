@@ -6,6 +6,10 @@
 
 #include <Arduino.h>
 #include <Bluepad32.h>
+#include <M5Atom.h>
+#include "AtomMotion.h"
+#include <neotimer.h>
+#include <Preferences.h>
 
 //
 // README FIRST, README FIRST, README FIRST
@@ -22,6 +26,235 @@
 //    CONFIG_BLUEPAD32_USB_CONSOLE_ENABLE=n
 
 ControllerPtr myControllers[BP32_MAX_GAMEPADS];
+
+#define LONG_PRESS 1000
+#define WIIMOTE_BTN_1 1
+#define WIIMOTE_BTN_2 2
+#define WIIMOTE_BTN_A 4
+#define WIIMOTE_BTN_B 8
+
+#define LED_PIN1 19
+#define LED_PIN2 33
+
+AtomMotion Atom;
+Preferences preferences;
+
+
+bool programButtonPressed = true;
+bool motorDirection = false;
+bool servoDirection = true;
+bool ledState = false;
+bool pirouetteTurn = false;
+
+bool waitingButtonCommand = true;
+int runningProgram = 0; // persisted in EEPROM (Flash)
+boolean programStartedFlag = true;
+#define RUNNING_PROGRAM_CYCLE_0 0
+#define RUNNING_PROGRAM_CYCLE_1 1
+#define RUNNING_PROGRAM_WIIMOTE 2
+#define RUNNING_PROGRAMS_COUNT 3
+
+
+Neotimer cycleTimer = Neotimer(2000);
+
+int wiiMotor1 = 0;
+int wiiMotor2 = 0;
+bool wiiButtonAIsPressed = false;
+bool wiiButtonBIsPressed = false;
+
+void parametrizedCyclingProgram(int servoAngle1, int servoAngle2)
+{
+    if (cycleTimer.repeat())
+    {
+        servoDirection = !servoDirection;
+        Console.println("Servo direction toggled");
+        ledState =! ledState;
+    }
+
+    if (programButtonPressed)
+    {
+        motorDirection = !motorDirection;
+        programButtonPressed = false; // clear flag
+        Console.println("Motor direction toggled");
+    }
+
+    if (motorDirection)
+    {
+        Atom.SetMotorSpeed(1, 127);
+        Atom.SetMotorSpeed(2, 127);
+    }
+    else
+    {
+        Atom.SetMotorSpeed(1, -127);
+        Atom.SetMotorSpeed(2, -127);
+    }
+    int servoAngle = servoDirection ? servoAngle2 : servoAngle1;
+    Atom.SetServoAngle(1, servoAngle);
+    Atom.SetServoAngle(2, servoAngle2-servoAngle);  // even servos goes the other direction
+    Atom.SetServoAngle(3, servoAngle);
+    Atom.SetServoAngle(4, servoAngle2-servoAngle);  // even servos goes the other direction
+
+    if (ledState) {
+        digitalWrite(LED_PIN1, HIGH);
+    } else {
+        digitalWrite(LED_PIN1, LOW);
+    }
+    digitalWrite(LED_PIN2, HIGH);
+}
+
+void program0Loop()
+{
+    M5.dis.drawpix(0, 0x00ff00); // green
+    parametrizedCyclingProgram(0, 180);
+}
+
+void program1Loop()
+{
+    M5.dis.drawpix(0, 0xffff00); // yellow
+    parametrizedCyclingProgram(0, 90);
+}
+
+void program3WiimoteLoop()
+{
+    if (programStartedFlag)
+    {
+        // stop motors on program started (switched from another program)
+        wiiMotor1 = 0;
+        wiiMotor2 = 0;
+        programStartedFlag = false;
+        Console.println("Wiimote program started");
+    }
+
+    M5.dis.drawpix(0, 0x0000ff); // blue
+
+    // handle wiimote
+    ControllerPtr ctrl = myControllers[0];
+    if (ctrl != nullptr) {
+        // wheel motors
+        if (ctrl->dpad() & DPAD_UP) // forward
+        {
+            wiiMotor1 = 1;
+            wiiMotor2 = 1;
+            if (ctrl->buttons() & WIIMOTE_BTN_1) // forward left
+            {
+                wiiMotor1 = 0;
+                Console.println("Forward left");
+            }
+            else if (ctrl->buttons() & WIIMOTE_BTN_2) // forward right
+            {
+                wiiMotor2 = 0;
+                Console.println("Forward right");
+            }
+            else
+            {
+                Console.println("Forward");
+            }
+        }
+        else if (ctrl->dpad() & DPAD_DOWN) // reverse
+        {
+            wiiMotor1 = -1;
+            wiiMotor2 = -1;
+            if (ctrl->buttons() & WIIMOTE_BTN_1) // reverse left
+            {
+                wiiMotor1 = 0;
+                Console.println("Reverse left");
+            }
+            else if (ctrl->buttons() & WIIMOTE_BTN_2) // reverse right
+            {
+                wiiMotor2 = 0;
+                Console.println("Reverse right");
+            }
+            else
+            {
+                Console.println("Reverse");
+            }
+        }
+        else if (pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_1)) // pirouette left
+        {
+            wiiMotor1 = -1;
+            wiiMotor2 = 1;
+            Console.println("Pirouette left");
+        }
+        else if (pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_2)) // pirouette right
+        {
+            wiiMotor1 = 1;
+            wiiMotor2 = -1;
+            Console.println("Pirouette right");
+        }
+        else if (!pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_1)) // forward left instead of pirouette left
+        {
+            wiiMotor1 = 0;
+            wiiMotor2 = 1;
+            Console.println("Forward left");
+        }
+        else if (!pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_2)) // forward right instead of pirouette right
+        {
+            wiiMotor1 = 1;
+            wiiMotor2 = 0;
+            Console.println("Forward right");
+        }
+        else
+        {
+            wiiMotor1 = 0;
+            wiiMotor2 = 0;
+            Console.println("Stop");
+        }
+        // manipulation servo
+        if ((ctrl->buttons() & WIIMOTE_BTN_A) && !wiiButtonAIsPressed)    // A just pressed
+        {
+            servoDirection = !servoDirection;
+            Console.println("Servo direction toggled");
+            wiiButtonAIsPressed = true;
+        } else if (!(ctrl->buttons() & WIIMOTE_BTN_A)) {  // A released
+            wiiButtonAIsPressed = false;
+        }
+        // external LED lights
+        if ((ctrl->buttons() & WIIMOTE_BTN_B) && !wiiButtonBIsPressed)    // B just pressed
+        {
+            ledState = !ledState;
+            Console.println("External LED toggled");
+            wiiButtonBIsPressed = true;
+        } else if (!(ctrl->buttons() & WIIMOTE_BTN_B)) {  // B released
+            wiiButtonBIsPressed = false;
+        }
+    } else {
+        wiiMotor1 = 0;
+        wiiMotor2 = 0;
+        Console.println("Stop (no controller #0)");
+    }
+    Atom.SetMotorSpeed(1, 127 * wiiMotor1);
+    Atom.SetMotorSpeed(2, 127 * wiiMotor2);
+    int servoAngle1 = servoDirection ? 90 : 0;  // 1 and 2 servos goes smaller angle
+    int servoAngle2 = servoDirection ? 180 : 0;  // 3 and 4 servos goes full angle
+    Atom.SetServoAngle(1, servoAngle1);
+    Atom.SetServoAngle(2, 90-servoAngle1);  // even servos goes the other direction
+    Atom.SetServoAngle(3, servoAngle2);
+    Atom.SetServoAngle(4, 180-servoAngle2);  // even servos goes the other direction
+
+    if (ledState) {
+        digitalWrite(LED_PIN1, HIGH);
+        digitalWrite(LED_PIN2, HIGH);
+    } else {
+        digitalWrite(LED_PIN1, LOW);
+        digitalWrite(LED_PIN2, LOW);
+    }    
+
+}
+
+void longPressCommand()
+{
+    // run next program
+    int newRunningProgram = runningProgram + 1;
+    runningProgram = newRunningProgram % RUNNING_PROGRAMS_COUNT;
+    preferences.putInt("runningProgram", runningProgram);
+    programButtonPressed = false; // always clear command button flag in case the previous program has not clear it
+    programStartedFlag = true;
+}
+
+void shortPressCommand()
+{
+    programButtonPressed = true;
+}
 
 // This callback gets called any time a new gamepad is connected.
 // Up to 4 gamepads can be connected at the same time.
@@ -85,142 +318,22 @@ void dumpGamepad(ControllerPtr ctl) {
     );
 }
 
-void dumpMouse(ControllerPtr ctl) {
-    Console.printf("idx=%d, buttons: 0x%04x, scrollWheel=0x%04x, delta X: %4d, delta Y: %4d\n",
-                   ctl->index(),        // Controller Index
-                   ctl->buttons(),      // bitmask of pressed buttons
-                   ctl->scrollWheel(),  // Scroll Wheel
-                   ctl->deltaX(),       // (-511 - 512) left X Axis
-                   ctl->deltaY()        // (-511 - 512) left Y axis
-    );
-}
-
-void dumpKeyboard(ControllerPtr ctl) {
-    // TODO: Print pressed keys
-    Console.printf("idx=%d\n", ctl->index());
-}
-
-void dumpBalanceBoard(ControllerPtr ctl) {
-    Console.printf("idx=%d,  TL=%u, TR=%u, BL=%u, BR=%u, temperature=%d\n",
-                   ctl->index(),        // Controller Index
-                   ctl->topLeft(),      // top-left scale
-                   ctl->topRight(),     // top-right scale
-                   ctl->bottomLeft(),   // bottom-left scale
-                   ctl->bottomRight(),  // bottom-right scale
-                   ctl->temperature()   // temperature: used to adjust the scale value's precision
-    );
-}
-
 void processGamepad(ControllerPtr ctl) {
     // There are different ways to query whether a button is pressed.
     // By query each button individually:
     //  a(), b(), x(), y(), l1(), etc...
-    if (ctl->a()) {
-        static int colorIdx = 0;
-        // Some gamepads like DS4 and DualSense support changing the color LED.
-        // It is possible to change it by calling:
-        switch (colorIdx % 3) {
-            case 0:
-                // Red
-                ctl->setColorLED(255, 0, 0);
-                break;
-            case 1:
-                // Green
-                ctl->setColorLED(0, 255, 0);
-                break;
-            case 2:
-                // Blue
-                ctl->setColorLED(0, 0, 255);
-                break;
-        }
-        colorIdx++;
-    }
-
-    if (ctl->b()) {
-        // Turn on the 4 LED. Each bit represents one LED.
-        static int led = 0;
-        led++;
-        // Some gamepads like the DS3, DualSense, Nintendo Wii, Nintendo Switch
-        // support changing the "Player LEDs": those 4 LEDs that usually indicate
-        // the "gamepad seat".
-        // It is possible to change them by calling:
-        ctl->setPlayerLEDs(led & 0x0f);
-    }
-
-    if (ctl->x()) {
-        // Some gamepads like DS3, DS4, DualSense, Switch, Xbox One S, Stadia support rumble.
-        // It is possible to set it by calling:
-        // Some controllers have two motors: "strong motor", "weak motor".
-        // It is possible to control them independently.
-        ctl->playDualRumble(0 /* delayedStartMs */, 250 /* durationMs */, 0x80 /* weakMagnitude */,
-                            0x40 /* strongMagnitude */);
-    }
 
     // Another way to query controller data is by getting the buttons() function.
     // See how the different "dump*" functions dump the Controller info.
     dumpGamepad(ctl);
-
-    // See ArduinoController.h for all the available functions.
 }
 
-void processMouse(ControllerPtr ctl) {
-    // This is just an example.
-    if (ctl->scrollWheel() > 0) {
-        // Do Something
-    } else if (ctl->scrollWheel() < 0) {
-        // Do something else
-    }
-
-    // See "dumpMouse" for possible things to query.
-    dumpMouse(ctl);
-}
-
-void processKeyboard(ControllerPtr ctl) {
-    // This is just an example.
-    if (ctl->isKeyPressed(Keyboard_A)) {
-        // Do Something
-        Console.println("Key 'A' pressed");
-    }
-
-    // Don't do "else" here.
-    // Multiple keys can be pressed at the same time.
-    if (ctl->isKeyPressed(Keyboard_LeftShift)) {
-        // Do something else
-        Console.println("Key 'LEFT SHIFT' pressed");
-    }
-
-    // Don't do "else" here.
-    // Multiple keys can be pressed at the same time.
-    if (ctl->isKeyPressed(Keyboard_LeftArrow)) {
-        // Do something else
-        Console.println("Key 'Left Arrow' pressed");
-    }
-
-    // See "dumpKeyboard" for possible things to query.
-    dumpKeyboard(ctl);
-}
-
-void processBalanceBoard(ControllerPtr ctl) {
-    // This is just an example.
-    if (ctl->topLeft() > 10000) {
-        // Do Something
-    }
-
-    // See "dumpBalanceBoard" for possible things to query.
-    dumpBalanceBoard(ctl);
-}
 
 void processControllers() {
     for (auto myController : myControllers) {
         if (myController && myController->isConnected() && myController->hasData()) {
             if (myController->isGamepad()) {
                 processGamepad(myController);
-            } else if (myController->isMouse()) {
-                processMouse(myController);
-            } else if (myController->isKeyboard()) {
-                processKeyboard(myController);
-            } else if (myController->isBalanceBoard()) {
-                processBalanceBoard(myController);
             } else {
                 Console.printf("Unsupported controller\n");
             }
@@ -230,6 +343,17 @@ void processControllers() {
 
 // Arduino setup function. Runs in CPU 1
 void setup() {
+    pinMode(LED_PIN1, OUTPUT);
+    pinMode(LED_PIN2, OUTPUT);
+    digitalWrite(LED_PIN1, LOW);
+    digitalWrite(LED_PIN2, LOW);
+
+    preferences.begin("lego", false); 
+    runningProgram = preferences.getInt("runningProgram", 0);
+
+    M5.begin(false, false, true);  // disable Serial since blupad32 handles Serial on its own via Console
+    Atom.Init(); // Motion I2C connectivity initialized here
+
     Console.printf("Firmware: %s\n", BP32.firmwareVersion());
     const uint8_t* addr = BP32.localBdAddress();
     Console.printf("BD Addr: %2X:%2X:%2X:%2X:%2X:%2X\n", addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
@@ -265,6 +389,44 @@ void loop() {
     if (dataUpdated)
         processControllers();
 
+    // handle M5Atom button
+    M5.update();
+    if (waitingButtonCommand && M5.Btn.pressedFor(LONG_PRESS))
+    { // is pressed (not released yet) for LONG_PRESS period
+        Console.println("Long press");
+        longPressCommand();
+        waitingButtonCommand = false; // wait for button release
+    }
+    else if (waitingButtonCommand && M5.Btn.wasReleased())
+    { // release before LONG_PRESS period
+        Console.println("Short press");
+        shortPressCommand();
+    }
+    else if (!waitingButtonCommand && M5.Btn.wasReleased())
+    {
+        Console.println("Released after long press");
+        waitingButtonCommand = true; // can accept next command (button press)
+    }
+
+    // run selected program loop
+    switch (runningProgram)
+    {
+    case RUNNING_PROGRAM_CYCLE_0:
+        program0Loop();
+        break;
+
+    case RUNNING_PROGRAM_CYCLE_1:
+        program1Loop();
+        break;
+
+    case RUNNING_PROGRAM_WIIMOTE:
+        program3WiimoteLoop();
+        break;
+
+    default:
+        break;
+    }
+
     // The main loop must have some kind of "yield to lower priority task" event.
     // Otherwise, the watchdog will get triggered.
     // If your main loop doesn't have one, just add a simple `vTaskDelay(1)`.
@@ -272,5 +434,5 @@ void loop() {
     // https://stackoverflow.com/questions/66278271/task-watchdog-got-triggered-the-tasks-did-not-reset-the-watchdog-in-time
 
     //     vTaskDelay(1);
-    delay(150);
+    delay(1);
 }
