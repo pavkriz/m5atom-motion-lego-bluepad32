@@ -33,6 +33,8 @@ ControllerPtr myControllers[BP32_MAX_GAMEPADS];
 #define WIIMOTE_BTN_A 4
 #define WIIMOTE_BTN_B 8
 
+#define MOTOR_FULL_SPEED 127
+
 #define LED_PIN1 19
 #define LED_PIN2 33
 
@@ -114,6 +116,10 @@ void program1Loop()
     parametrizedCyclingProgram(0, 90);
 }
 
+double recalcAxis(int32_t rawAxis) {
+    return rawAxis / 512.0;
+}
+
 void program3WiimoteLoop()
 {
     if (programStartedFlag)
@@ -130,100 +136,111 @@ void program3WiimoteLoop()
     // handle wiimote
     ControllerPtr ctrl = myControllers[0];
     if (ctrl != nullptr) {
-        // wheel motors
-        if (ctrl->dpad() & DPAD_UP) // forward
-        {
-            wiiMotor1 = 1;
-            wiiMotor2 = 1;
-            if (ctrl->buttons() & WIIMOTE_BTN_1) // forward left
+        ControllerProperties properties = ctrl->getProperties();
+        if (properties.type == CONTROLLER_TYPE_WiiController) {
+            // wheel motors
+            if (ctrl->dpad() & DPAD_UP) // forward
+            {
+                wiiMotor1 = MOTOR_FULL_SPEED;
+                wiiMotor2 = MOTOR_FULL_SPEED;
+                if (ctrl->buttons() & WIIMOTE_BTN_1) // forward left
+                {
+                    wiiMotor1 = 0;
+                    Console.println("Forward left");
+                }
+                else if (ctrl->buttons() & WIIMOTE_BTN_2) // forward right
+                {
+                    wiiMotor2 = 0;
+                    Console.println("Forward right");
+                }
+                else
+                {
+                    Console.println("Forward");
+                }
+            }
+            else if (ctrl->dpad() & DPAD_DOWN) // reverse
+            {
+                wiiMotor1 = -MOTOR_FULL_SPEED;
+                wiiMotor2 = -MOTOR_FULL_SPEED;
+                if (ctrl->buttons() & WIIMOTE_BTN_1) // reverse left
+                {
+                    wiiMotor1 = 0;
+                    Console.println("Reverse left");
+                }
+                else if (ctrl->buttons() & WIIMOTE_BTN_2) // reverse right
+                {
+                    wiiMotor2 = 0;
+                    Console.println("Reverse right");
+                }
+                else
+                {
+                    Console.println("Reverse");
+                }
+            }
+            else if (pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_1)) // pirouette left
+            {
+                wiiMotor1 = -MOTOR_FULL_SPEED;
+                wiiMotor2 = MOTOR_FULL_SPEED;
+                Console.println("Pirouette left");
+            }
+            else if (pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_2)) // pirouette right
+            {
+                wiiMotor1 = MOTOR_FULL_SPEED;
+                wiiMotor2 = -MOTOR_FULL_SPEED;
+                Console.println("Pirouette right");
+            }
+            else if (!pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_1)) // forward left instead of pirouette left
             {
                 wiiMotor1 = 0;
+                wiiMotor2 = MOTOR_FULL_SPEED;
                 Console.println("Forward left");
             }
-            else if (ctrl->buttons() & WIIMOTE_BTN_2) // forward right
+            else if (!pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_2)) // forward right instead of pirouette right
             {
+                wiiMotor1 = MOTOR_FULL_SPEED;
                 wiiMotor2 = 0;
                 Console.println("Forward right");
             }
             else
             {
-                Console.println("Forward");
-            }
-        }
-        else if (ctrl->dpad() & DPAD_DOWN) // reverse
-        {
-            wiiMotor1 = -1;
-            wiiMotor2 = -1;
-            if (ctrl->buttons() & WIIMOTE_BTN_1) // reverse left
-            {
                 wiiMotor1 = 0;
-                Console.println("Reverse left");
-            }
-            else if (ctrl->buttons() & WIIMOTE_BTN_2) // reverse right
-            {
                 wiiMotor2 = 0;
-                Console.println("Reverse right");
+                Console.println("Stop");
             }
-            else
+            // manipulation servo
+            if ((ctrl->buttons() & WIIMOTE_BTN_A) && !wiiButtonAIsPressed)    // A just pressed
             {
-                Console.println("Reverse");
+                servoDirection = !servoDirection;
+                Console.println("Servo direction toggled");
+                wiiButtonAIsPressed = true;
+            } else if (!(ctrl->buttons() & WIIMOTE_BTN_A)) {  // A released
+                wiiButtonAIsPressed = false;
             }
-        }
-        else if (pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_1)) // pirouette left
-        {
-            wiiMotor1 = -1;
-            wiiMotor2 = 1;
-            Console.println("Pirouette left");
-        }
-        else if (pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_2)) // pirouette right
-        {
-            wiiMotor1 = 1;
-            wiiMotor2 = -1;
-            Console.println("Pirouette right");
-        }
-        else if (!pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_1)) // forward left instead of pirouette left
-        {
-            wiiMotor1 = 0;
-            wiiMotor2 = 1;
-            Console.println("Forward left");
-        }
-        else if (!pirouetteTurn && (ctrl->buttons() & WIIMOTE_BTN_2)) // forward right instead of pirouette right
-        {
-            wiiMotor1 = 1;
-            wiiMotor2 = 0;
-            Console.println("Forward right");
-        }
-        else
-        {
-            wiiMotor1 = 0;
-            wiiMotor2 = 0;
-            Console.println("Stop");
-        }
-        // manipulation servo
-        if ((ctrl->buttons() & WIIMOTE_BTN_A) && !wiiButtonAIsPressed)    // A just pressed
-        {
-            servoDirection = !servoDirection;
-            Console.println("Servo direction toggled");
-            wiiButtonAIsPressed = true;
-        } else if (!(ctrl->buttons() & WIIMOTE_BTN_A)) {  // A released
-            wiiButtonAIsPressed = false;
-        }
-        // external LED lights
-        if ((ctrl->buttons() & WIIMOTE_BTN_B) && !wiiButtonBIsPressed)    // B just pressed
-        {
-            ledState = !ledState;
-            Console.println("External LED toggled");
-            wiiButtonBIsPressed = true;
-        } else if (!(ctrl->buttons() & WIIMOTE_BTN_B)) {  // B released
-            wiiButtonBIsPressed = false;
+            // external LED lights
+            if ((ctrl->buttons() & WIIMOTE_BTN_B) && !wiiButtonBIsPressed)    // B just pressed
+            {
+                ledState = !ledState;
+                Console.println("External LED toggled");
+                wiiButtonBIsPressed = true;
+            } else if (!(ctrl->buttons() & WIIMOTE_BTN_B)) {  // B released
+                wiiButtonBIsPressed = false;
+            }
+        } else if (properties.type == CONTROLLER_TYPE_SwitchJoyConLeft || properties.type == CONTROLLER_TYPE_SwitchJoyConRight) {
+            double recalcX = -recalcAxis(ctrl->axisX());
+            double recalcY = recalcAxis(ctrl->axisY());
+            float motor1 = max(min((recalcX + recalcY), 1.0), -1.0);
+            float motor2 = max(min((recalcY - recalcX), 1.0), -1.0);
+            Console.printf("Joycon %0.2f,%0.2f motor %0.2f,%0.2f\n", recalcX, recalcY, motor1, motor2);
+            wiiMotor1 = abs(motor1) > 0.4 ? -motor1*127 : 0; // avoid low PWM values leading to no movement
+            wiiMotor2 = abs(motor2) > 0.4 ? -motor2*127 : 0; // avoid low PWM values leading to no movement
         }
     } else {
         wiiMotor1 = 0;
         wiiMotor2 = 0;
-        Console.println("Stop (no controller #0)");
+        Console.println("Stop (no controller #0)");    
     }
-    Atom.SetMotorSpeed(1, 127 * wiiMotor1);
-    Atom.SetMotorSpeed(2, 127 * wiiMotor2);
+    Atom.SetMotorSpeed(1, wiiMotor1);
+    Atom.SetMotorSpeed(2, wiiMotor2);
     int servoAngle1 = servoDirection ? 90 : 0;  // 1 and 2 servos goes smaller angle
     int servoAngle2 = servoDirection ? 180 : 0;  // 3 and 4 servos goes full angle
     Atom.SetServoAngle(1, servoAngle1);
@@ -266,8 +283,8 @@ void onConnectedController(ControllerPtr ctl) {
             // Additionally, you can get certain gamepad properties like:
             // Model, VID, PID, BTAddr, flags, etc.
             ControllerProperties properties = ctl->getProperties();
-            Console.printf("Controller model: %s, VID=0x%04x, PID=0x%04x\n", ctl->getModelName(), properties.vendor_id,
-                           properties.product_id);
+            Console.printf("Controller model: %s, VID=0x%04x, PID=0x%04x, BLUEPAD_TYPE=%04x\n", ctl->getModelName(), properties.vendor_id,
+                           properties.product_id, properties.type);
             myControllers[i] = ctl;
             foundEmptySlot = true;
             break;
