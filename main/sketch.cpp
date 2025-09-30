@@ -34,6 +34,7 @@ ControllerPtr myControllers[BP32_MAX_GAMEPADS];
 #define WIIMOTE_BTN_B 8
 
 #define MOTOR_FULL_SPEED 127
+#define STEERING_SERVO_MID_ANGLE 95
 
 #define LED_PIN1 19
 #define LED_PIN2 33
@@ -53,14 +54,16 @@ int runningProgram = 0; // persisted in EEPROM (Flash)
 boolean programStartedFlag = true;
 #define RUNNING_PROGRAM_CYCLE_0 0
 #define RUNNING_PROGRAM_CYCLE_1 1
-#define RUNNING_PROGRAM_WIIMOTE 2
-#define RUNNING_PROGRAMS_COUNT 3
+#define RUNNING_PROGRAM_WIIMOTE_TWO_WHEELED 2
+#define RUNNING_PROGRAM_JOYCON_STEERING 3
+#define RUNNING_PROGRAMS_COUNT 4
 
 
 Neotimer cycleTimer = Neotimer(2000);
 
 int wiiMotor1 = 0;
 int wiiMotor2 = 0;
+int steeringServoAngle = STEERING_SERVO_MID_ANGLE;
 bool wiiButtonAIsPressed = false;
 bool wiiButtonBIsPressed = false;
 
@@ -120,7 +123,7 @@ double recalcAxis(int32_t rawAxis) {
     return rawAxis / 512.0;
 }
 
-void program3WiimoteLoop()
+void program3WiimoteTwoWheeledLoop()
 {
     if (programStartedFlag)
     {
@@ -257,6 +260,60 @@ void program3WiimoteLoop()
     }    
 
 }
+
+/**
+ * Nintendo Switch Joycon remote + two motors + servo steering
+ */
+void program3JoyconSteeringLoop()
+{
+    if (programStartedFlag)
+    {
+        // stop motors on program started (switched from another program)
+        wiiMotor1 = 0;
+        wiiMotor2 = 0;
+        steeringServoAngle = STEERING_SERVO_MID_ANGLE;
+        programStartedFlag = false;
+        Console.println("Joycon Steering program started");
+    }
+
+    M5.dis.drawpix(0, 0xff00ff); // violet
+
+    // handle wiimote
+    ControllerPtr ctrl = myControllers[0];
+    if (ctrl != nullptr) {
+        ControllerProperties properties = ctrl->getProperties();
+        if (properties.type == CONTROLLER_TYPE_SwitchJoyConLeft || properties.type == CONTROLLER_TYPE_SwitchJoyConRight) {
+            double recalcX = recalcAxis(ctrl->axisX()); // to -1..1
+            double steeringNarrowed = recalcX * 0.8;
+            steeringServoAngle = (int)((steeringNarrowed + 1.0) * STEERING_SERVO_MID_ANGLE); // 72..108            
+            Console.printf("Joycon X=%0.2f\tSteering servo angle %d\n", recalcX, steeringServoAngle);            
+            if (ctrl->buttons() & 1) { // up
+                wiiMotor1 = MOTOR_FULL_SPEED;
+                wiiMotor2 = MOTOR_FULL_SPEED;
+            } else if (ctrl->buttons() & 8) { // down
+                wiiMotor1 = -MOTOR_FULL_SPEED;
+                wiiMotor2 = -MOTOR_FULL_SPEED;
+            } else {
+                wiiMotor1 = 0;
+                wiiMotor2 = 0;
+            }
+            // virtual differential gear - slow down inner wheel by a factor
+            double factor = 0.2; // 0.0..1.0, 0.0 = no effect, 1.0 = full stop; actually 0.7 is full stop already
+            if (recalcX > 0.2) { // turning right
+                wiiMotor1 = wiiMotor1 * (1.0 - recalcX * factor); // slow down right motor
+            } else if (recalcX < -0.2) { // turning left
+                wiiMotor2 = wiiMotor2 * (1.0 + recalcX * factor); // slow down left motor
+            }
+        }
+    }
+    Atom.SetServoAngle(1, steeringServoAngle);
+    Atom.SetServoAngle(2, steeringServoAngle);
+    Atom.SetServoAngle(3, steeringServoAngle);
+    Atom.SetServoAngle(4, steeringServoAngle);
+    Atom.SetMotorSpeed(1, wiiMotor1);
+    Atom.SetMotorSpeed(2, wiiMotor2);
+}
+
 
 void longPressCommand()
 {
@@ -436,8 +493,12 @@ void loop() {
         program1Loop();
         break;
 
-    case RUNNING_PROGRAM_WIIMOTE:
-        program3WiimoteLoop();
+    case RUNNING_PROGRAM_WIIMOTE_TWO_WHEELED:
+        program3WiimoteTwoWheeledLoop();
+        break;
+
+    case RUNNING_PROGRAM_JOYCON_STEERING:
+        program3JoyconSteeringLoop();
         break;
 
     default:
